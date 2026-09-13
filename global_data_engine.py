@@ -1,9 +1,8 @@
 # ============================================================
-# GLOBAL DATA ENGINE v1.4.5
+# GLOBAL DATA ENGINE v1.4.6
 # MicroCap Catalyst Radar API
 # Yahoo Finance (screener + chart) + SEC EDGAR
-# No API Key Required
-# Gunicorn Compatible (Render ready)
+# Gunicorn Safe Startup (Render ready)
 # ============================================================
 
 import os
@@ -26,7 +25,7 @@ from flask import Flask, jsonify, request
 # ============================================================
 
 APP_NAME = "GlobalDataEngine"
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 
 DB_FILE = "data_engine.db"
 JSON_FILE = "api_database.json"
@@ -215,98 +214,104 @@ def safe_int(value, default=0):
 
 def save_record(category, data, symbol=None):
 
-    conn = get_db()
-    cur = conn.cursor()
+    try:
 
-    record_id = stable_id(category, symbol)
+        conn = get_db()
+        cur = conn.cursor()
 
-    timestamp = now_iso()
+        record_id = stable_id(category, symbol)
 
-    new_json = json.dumps(
-        data,
-        ensure_ascii=False,
-        sort_keys=True
-    )
+        timestamp = now_iso()
 
-    cur.execute(
-        """
-        SELECT data_json
-        FROM records
-        WHERE record_id=?
-        """,
-        (record_id,)
-    )
+        new_json = json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True
+        )
 
-    old = cur.fetchone()
+        cur.execute(
+            """
+            SELECT data_json
+            FROM records
+            WHERE record_id=?
+            """,
+            (record_id,)
+        )
 
-    if old:
-        old_json = old["data_json"]
+        old = cur.fetchone()
 
-        if old_json != new_json:
+        if old:
+            old_json = old["data_json"]
+
+            if old_json != new_json:
+
+                cur.execute(
+                    """
+                    INSERT INTO changes
+                    (
+                        category,
+                        symbol,
+                        old_data,
+                        new_data,
+                        changed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        category,
+                        symbol,
+                        old_json,
+                        new_json,
+                        timestamp
+                    )
+                )
 
             cur.execute(
                 """
-                INSERT INTO changes
-                (
-                    category,
-                    symbol,
-                    old_data,
-                    new_data,
-                    changed_at
-                )
-                VALUES (?, ?, ?, ?, ?)
+                UPDATE records
+                SET
+                    data_json=?,
+                    updated_at=?
+                WHERE record_id=?
                 """,
                 (
+                    new_json,
+                    timestamp,
+                    record_id
+                )
+            )
+
+        else:
+
+            cur.execute(
+                """
+                INSERT INTO records
+                (
+                    record_id,
                     category,
                     symbol,
-                    old_json,
+                    data_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_id,
+                    category,
+                    symbol,
                     new_json,
+                    timestamp,
                     timestamp
                 )
             )
 
-        cur.execute(
-            """
-            UPDATE records
-            SET
-                data_json=?,
-                updated_at=?
-            WHERE record_id=?
-            """,
-            (
-                new_json,
-                timestamp,
-                record_id
-            )
-        )
+        conn.commit()
+        conn.close()
 
-    else:
+    except Exception as e:
 
-        cur.execute(
-            """
-            INSERT INTO records
-            (
-                record_id,
-                category,
-                symbol,
-                data_json,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                category,
-                symbol,
-                new_json,
-                timestamp,
-                timestamp
-            )
-        )
-
-    conn.commit()
-    conn.close()
+        print(f"[DB WRITE ERROR] {category}/{symbol}: {e}")
 
 
 # ============================================================
@@ -1494,6 +1499,8 @@ def complete_scan():
         "status": "running"
     }
 
+    scan_id = None
+
     try:
 
         conn = get_db()
@@ -1516,10 +1523,6 @@ def complete_scan():
 
         print(f"[SCAN DB ERROR] {e}")
 
-        SCAN_LOCK.release()
-
-        return
-
     try:
 
         stocks = scan_stocks()
@@ -1528,25 +1531,33 @@ def complete_scan():
 
         finished = now_iso()
 
-        conn = get_db()
-        cur = conn.cursor()
+        if scan_id is not None:
 
-        cur.execute(
-            """
-            UPDATE scans
-            SET finished_at=?, record_count=?, status=?
-            WHERE id=?
-            """,
-            (
-                finished,
-                len(stocks) + len(ecommerce) + len(b2b),
-                "success",
-                scan_id
-            )
-        )
+            try:
 
-        conn.commit()
-        conn.close()
+                conn = get_db()
+                cur = conn.cursor()
+
+                cur.execute(
+                    """
+                    UPDATE scans
+                    SET finished_at=?, record_count=?, status=?
+                    WHERE id=?
+                    """,
+                    (
+                        finished,
+                        len(stocks) + len(ecommerce) + len(b2b),
+                        "success",
+                        scan_id
+                    )
+                )
+
+                conn.commit()
+                conn.close()
+
+            except Exception as e:
+
+                print(f"[SCAN UPDATE ERROR] {e}")
 
         LAST_SCAN = {
             "started_at": started,
@@ -1565,25 +1576,27 @@ def complete_scan():
 
         finished = now_iso()
 
-        try:
+        if scan_id is not None:
 
-            conn = get_db()
-            cur = conn.cursor()
+            try:
 
-            cur.execute(
-                """
-                UPDATE scans
-                SET finished_at=?, status=?
-                WHERE id=?
-                """,
-                (finished, "error", scan_id)
-            )
+                conn = get_db()
+                cur = conn.cursor()
 
-            conn.commit()
-            conn.close()
+                cur.execute(
+                    """
+                    UPDATE scans
+                    SET finished_at=?, status=?
+                    WHERE id=?
+                    """,
+                    (finished, "error", scan_id)
+                )
 
-        except Exception:
-            pass
+                conn.commit()
+                conn.close()
+
+            except Exception:
+                pass
 
         LAST_SCAN = {
             "started_at": started,
@@ -1610,11 +1623,21 @@ def background_loop():
         f"Interval={SCAN_INTERVAL}s"
     )
 
+    time.sleep(15)
+
     while True:
 
         try:
+
             complete_scan()
+
+            try:
+                export_json()
+            except Exception as e:
+                print(f"[EXPORT ERROR] {e}")
+
         except Exception as e:
+
             print(f"[SCAN LOOP ERROR] {e}")
 
         time.sleep(SCAN_INTERVAL)
@@ -1705,6 +1728,8 @@ def get_records(category=None, limit=100):
 
     conn = get_db()
     cur = conn.cursor()
+
+    rows = []
 
     try:
 
@@ -1817,6 +1842,10 @@ def stats():
 
     conn = get_db()
     cur = conn.cursor()
+
+    rows = []
+    changes = 0
+    usage = 0
 
     try:
 
@@ -1975,6 +2004,8 @@ def changes():
     conn = get_db()
     cur = conn.cursor()
 
+    rows = []
+
     try:
 
         cur.execute(
@@ -2103,7 +2134,7 @@ def export_json():
 
 
 # ============================================================
-# STARTUP — runs on import (works with gunicorn)
+# STARTUP — runs on import (gunicorn safe)
 # ============================================================
 
 print("=" * 65)
@@ -2113,22 +2144,6 @@ print("Data source: Yahoo Finance screeners + SEC EDGAR")
 print("=" * 65)
 
 init_db()
-
-
-def _startup_scan():
-
-    try:
-        complete_scan()
-        export_json()
-    except Exception as e:
-        print(f"[STARTUP SCAN ERROR] {e}")
-
-
-_startup_thread = threading.Thread(
-    target=_startup_scan,
-    daemon=True
-)
-_startup_thread.start()
 
 
 _worker = threading.Thread(
