@@ -1,8 +1,9 @@
 # ============================================================
-# GLOBAL DATA ENGINE v1.4.4
+# GLOBAL DATA ENGINE v1.4.5
 # MicroCap Catalyst Radar API
 # Yahoo Finance (screener + chart) + SEC EDGAR
 # No API Key Required
+# Gunicorn Compatible (Render ready)
 # ============================================================
 
 import os
@@ -25,7 +26,7 @@ from flask import Flask, jsonify, request
 # ============================================================
 
 APP_NAME = "GlobalDataEngine"
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 
 DB_FILE = "data_engine.db"
 JSON_FILE = "api_database.json"
@@ -163,6 +164,8 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+    print("[DB] Initialized")
 
 
 # ============================================================
@@ -426,14 +429,12 @@ def is_valid_stock_symbol(symbol):
     if symbol in banned_exact:
         return False
 
-    # Filter warrants, units, rights
     if re.search(
         r"\.(WS|WT|WW|U|UN|RT)$",
         symbol
     ):
         return False
 
-    # Filter 5-letter symbols ending in W (warrants)
     if (
         len(symbol) == 5
         and symbol.endswith("W")
@@ -1493,21 +1494,31 @@ def complete_scan():
         "status": "running"
     }
 
-    conn = get_db()
-    cur = conn.cursor()
+    try:
 
-    cur.execute(
-        """
-        INSERT INTO scans (scan_type, started_at, status)
-        VALUES (?, ?, ?)
-        """,
-        ("complete", started, "running")
-    )
+        conn = get_db()
+        cur = conn.cursor()
 
-    scan_id = cur.lastrowid
+        cur.execute(
+            """
+            INSERT INTO scans (scan_type, started_at, status)
+            VALUES (?, ?, ?)
+            """,
+            ("complete", started, "running")
+        )
 
-    conn.commit()
-    conn.close()
+        scan_id = cur.lastrowid
+
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+
+        print(f"[SCAN DB ERROR] {e}")
+
+        SCAN_LOCK.release()
+
+        return
 
     try:
 
@@ -1554,20 +1565,25 @@ def complete_scan():
 
         finished = now_iso()
 
-        conn = get_db()
-        cur = conn.cursor()
+        try:
 
-        cur.execute(
-            """
-            UPDATE scans
-            SET finished_at=?, status=?
-            WHERE id=?
-            """,
-            (finished, "error", scan_id)
-        )
+            conn = get_db()
+            cur = conn.cursor()
 
-        conn.commit()
-        conn.close()
+            cur.execute(
+                """
+                UPDATE scans
+                SET finished_at=?, status=?
+                WHERE id=?
+                """,
+                (finished, "error", scan_id)
+            )
+
+            conn.commit()
+            conn.close()
+
+        except Exception:
+            pass
 
         LAST_SCAN = {
             "started_at": started,
@@ -1690,34 +1706,44 @@ def get_records(category=None, limit=100):
     conn = get_db()
     cur = conn.cursor()
 
-    if category:
+    try:
 
-        cur.execute(
-            """
-            SELECT data_json
-            FROM records
-            WHERE category=?
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (category, limit)
-        )
+        if category:
 
-    else:
+            cur.execute(
+                """
+                SELECT data_json
+                FROM records
+                WHERE category=?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (category, limit)
+            )
 
-        cur.execute(
-            """
-            SELECT data_json
-            FROM records
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (limit,)
-        )
+        else:
 
-    rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT data_json
+                FROM records
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
 
-    conn.close()
+        rows = cur.fetchall()
+
+    except Exception as e:
+
+        print(f"[DB READ ERROR] {e}")
+
+        rows = []
+
+    finally:
+
+        conn.close()
 
     output = []
 
@@ -1792,23 +1818,35 @@ def stats():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT category, COUNT(*) AS count
-        FROM records
-        GROUP BY category
-        """
-    )
+    try:
 
-    rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT category, COUNT(*) AS count
+            FROM records
+            GROUP BY category
+            """
+        )
 
-    cur.execute("SELECT COUNT(*) AS count FROM changes")
-    changes = cur.fetchone()["count"]
+        rows = cur.fetchall()
 
-    cur.execute("SELECT COUNT(*) AS count FROM api_usage")
-    usage = cur.fetchone()["count"]
+        cur.execute("SELECT COUNT(*) AS count FROM changes")
+        changes = cur.fetchone()["count"]
 
-    conn.close()
+        cur.execute("SELECT COUNT(*) AS count FROM api_usage")
+        usage = cur.fetchone()["count"]
+
+    except Exception as e:
+
+        print(f"[STATS ERROR] {e}")
+
+        rows = []
+        changes = 0
+        usage = 0
+
+    finally:
+
+        conn.close()
 
     return jsonify({
 
@@ -1937,20 +1975,30 @@ def changes():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT id, category, symbol, old_data,
-               new_data, changed_at
-        FROM changes
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,)
-    )
+    try:
 
-    rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT id, category, symbol, old_data,
+                   new_data, changed_at
+            FROM changes
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
 
-    conn.close()
+        rows = cur.fetchall()
+
+    except Exception as e:
+
+        print(f"[CHANGES ERROR] {e}")
+
+        rows = []
+
+    finally:
+
+        conn.close()
 
     output = []
 
@@ -2055,34 +2103,50 @@ def export_json():
 
 
 # ============================================================
-# MAIN
+# STARTUP — runs on import (works with gunicorn)
+# ============================================================
+
+print("=" * 65)
+print(f"{APP_NAME} v{VERSION}")
+print("MicroCap Catalyst Radar API")
+print("Data source: Yahoo Finance screeners + SEC EDGAR")
+print("=" * 65)
+
+init_db()
+
+
+def _startup_scan():
+
+    try:
+        complete_scan()
+        export_json()
+    except Exception as e:
+        print(f"[STARTUP SCAN ERROR] {e}")
+
+
+_startup_thread = threading.Thread(
+    target=_startup_scan,
+    daemon=True
+)
+_startup_thread.start()
+
+
+_worker = threading.Thread(
+    target=background_loop,
+    daemon=True
+)
+_worker.start()
+
+
+# ============================================================
+# MAIN — only for local run
 # ============================================================
 
 if __name__ == "__main__":
 
-    print("=" * 65)
-    print(f"{APP_NAME} v{VERSION}")
-    print("MicroCap Catalyst Radar API")
-    print("Data source: Yahoo Finance screeners + SEC EDGAR")
-    print("=" * 65)
-
-    init_db()
-
-    complete_scan()
-
-    export_json()
-
-    worker = threading.Thread(
-        target=background_loop,
-        daemon=True
-    )
-
-    worker.start()
-
-    print("[API] Starting Flask server...")
-    print("[API] Local URL: http://127.0.0.1:5000")
-
     port = int(os.getenv("PORT", "5000"))
+
+    print(f"[API] Starting Flask server on port {port}...")
 
     app.run(
         host="0.0.0.0",
