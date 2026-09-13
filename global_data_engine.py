@@ -1,8 +1,8 @@
 # ============================================================
-# GLOBAL DATA ENGINE v1.4.6
+# GLOBAL DATA ENGINE v1.4.7
 # MicroCap Catalyst Radar API
 # Yahoo Finance (screener + chart) + SEC EDGAR
-# Gunicorn Safe Startup (Render ready)
+# Gunicorn Safe + AgenticTrade Auth
 # ============================================================
 
 import os
@@ -25,7 +25,7 @@ from flask import Flask, jsonify, request
 # ============================================================
 
 APP_NAME = "GlobalDataEngine"
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 
 DB_FILE = "data_engine.db"
 JSON_FILE = "api_database.json"
@@ -39,6 +39,7 @@ STOCK_LIMIT = int(os.getenv("STOCK_LIMIT", "200"))
 MASTER_API_KEY = os.getenv("MASTER_API_KEY", "")
 DEV_API_KEY = os.getenv("DEV_API_KEY", "dev-master-key-change-me")
 RAPIDAPI_PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "")
+AGENTICTRADE_AUTH = os.getenv("AGENTICTRADE_AUTH", "")
 
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "120"))
 
@@ -1649,6 +1650,20 @@ def background_loop():
 
 def check_auth():
 
+    # AgenticTrade: Bearer token (any)
+    auth_header = request.headers.get("Authorization", "")
+
+    if auth_header.startswith("Bearer "):
+
+        token = auth_header.replace("Bearer ", "").strip()
+
+        if AGENTICTRADE_AUTH:
+            if token == AGENTICTRADE_AUTH:
+                return True
+        elif token:
+            return True
+
+    # RapidAPI proxy secret
     rapidapi_key = request.headers.get(
         "X-RapidAPI-Proxy-Secret"
     )
@@ -1659,6 +1674,7 @@ def check_auth():
     ):
         return True
 
+    # Direct API key
     supplied = (
         request.headers.get("X-API-Key")
         or request.args.get("api_key")
@@ -1674,6 +1690,7 @@ def rate_limit():
 
     key = (
         request.headers.get("X-API-Key")
+        or request.headers.get("Authorization")
         or request.remote_addr
         or "unknown"
     )
