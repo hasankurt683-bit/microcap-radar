@@ -1,10 +1,3 @@
-# ============================================================
-# GLOBAL DATA ENGINE v1.4.7
-# MicroCap Catalyst Radar API
-# Yahoo Finance (screener + chart) + SEC EDGAR
-# Gunicorn Safe + AgenticTrade Auth
-# ============================================================
-
 import os
 import re
 import json
@@ -25,7 +18,7 @@ from flask import Flask, jsonify, request
 # ============================================================
 
 APP_NAME = "GlobalDataEngine"
-VERSION = "1.4.7"
+VERSION = "1.4.8"
 
 DB_FILE = "data_engine.db"
 JSON_FILE = "api_database.json"
@@ -39,7 +32,10 @@ STOCK_LIMIT = int(os.getenv("STOCK_LIMIT", "200"))
 MASTER_API_KEY = os.getenv("MASTER_API_KEY", "")
 DEV_API_KEY = os.getenv("DEV_API_KEY", "dev-master-key-change-me")
 RAPIDAPI_PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "")
-AGENTICTRADE_AUTH = os.getenv("AGENTICTRADE_AUTH", "")
+AGENTICTRADE_PROXY_SECRET = os.getenv(
+    "AGENTICTRADE_PROXY_SECRET",
+    "V0daub5dEC3e3BInJp4VJsU4VG58r_7fz0aY6kOGWa8"
+)
 
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "120"))
 
@@ -1650,17 +1646,38 @@ def background_loop():
 
 def check_auth():
 
-    # AgenticTrade: Bearer token (any)
+    # AgenticTrade proxy secret (X-Proxy-Secret header)
+    agentic_secret = request.headers.get("X-Proxy-Secret", "")
+
+    if (
+        AGENTICTRADE_PROXY_SECRET
+        and agentic_secret == AGENTICTRADE_PROXY_SECRET
+    ):
+        return True
+
+    # AgenticTrade alt header'lar (fallback)
+    for header_name in [
+        "X-AgenticTrade-Secret",
+        "X-ACF-Secret",
+        "X-AgenticTrade-Proxy-Secret",
+    ]:
+
+        secret = request.headers.get(header_name, "")
+
+        if (
+            AGENTICTRADE_PROXY_SECRET
+            and secret == AGENTICTRADE_PROXY_SECRET
+        ):
+            return True
+
+    # AgenticTrade Bearer token (eski yöntem)
     auth_header = request.headers.get("Authorization", "")
 
     if auth_header.startswith("Bearer "):
 
         token = auth_header.replace("Bearer ", "").strip()
 
-        if AGENTICTRADE_AUTH:
-            if token == AGENTICTRADE_AUTH:
-                return True
-        elif token:
+        if token:
             return True
 
     # RapidAPI proxy secret
@@ -1690,6 +1707,7 @@ def rate_limit():
 
     key = (
         request.headers.get("X-API-Key")
+        or request.headers.get("X-Proxy-Secret")
         or request.headers.get("Authorization")
         or request.remote_addr
         or "unknown"
@@ -1721,6 +1739,12 @@ def before_request():
         return None
 
     if not check_auth():
+
+        # Log the headers so we can see what AgenticTrade sends
+        print(
+            f"[AUTH FAIL] {request.method} {request.path} "
+            f"headers={dict(request.headers)}"
+        )
 
         return jsonify({
             "error": "Unauthorized",
@@ -1914,7 +1938,7 @@ def stats():
     })
 
 
-@app.route("/api/stocks")
+@app.route("/api/stocks", methods=["GET", "POST"])
 def stocks():
 
     limit = request.args.get("limit", default=100, type=int)
@@ -1941,7 +1965,7 @@ def stocks():
     })
 
 
-@app.route("/api/stocks/hot")
+@app.route("/api/stocks/hot", methods=["GET", "POST"])
 def hot_stocks():
 
     records = get_stock_records()
@@ -1973,7 +1997,7 @@ def hot_stocks():
     })
 
 
-@app.route("/api/stocks/<symbol>")
+@app.route("/api/stocks/<symbol>", methods=["GET", "POST"])
 def stock_detail(symbol):
 
     symbol = symbol.upper().strip()
