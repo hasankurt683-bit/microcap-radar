@@ -1,3 +1,10 @@
+# ============================================================
+# GLOBAL DATA ENGINE v1.4.9
+# MicroCap Catalyst Radar API
+# Yahoo Finance (screener + chart) + SEC EDGAR
+# Auth disabled (AgenticTrade/RapidAPI handle auth)
+# ============================================================
+
 import os
 import re
 import json
@@ -18,7 +25,7 @@ from flask import Flask, jsonify, request
 # ============================================================
 
 APP_NAME = "GlobalDataEngine"
-VERSION = "1.4.8"
+VERSION = "1.4.9"
 
 DB_FILE = "data_engine.db"
 JSON_FILE = "api_database.json"
@@ -34,7 +41,7 @@ DEV_API_KEY = os.getenv("DEV_API_KEY", "dev-master-key-change-me")
 RAPIDAPI_PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "")
 AGENTICTRADE_PROXY_SECRET = os.getenv(
     "AGENTICTRADE_PROXY_SECRET",
-    "V0daub5dEC3e3BInJp4VJsU4VG58r_7fz0aY6kOGWa8"
+    "16CrY5duB89Oi8nE1sxtZKT-r-UgnvKXOvmn-ECUcTs"
 )
 
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "120"))
@@ -1641,66 +1648,15 @@ def background_loop():
 
 
 # ============================================================
-# API AUTH
+# API AUTH — DISABLED
 # ============================================================
+# Auth is handled upstream by AgenticTrade/RapidAPI.
+# Only rate limiting is applied here.
 
 def check_auth():
-
-    # AgenticTrade proxy secret (X-Proxy-Secret header)
-    agentic_secret = request.headers.get("X-Proxy-Secret", "")
-
-    if (
-        AGENTICTRADE_PROXY_SECRET
-        and agentic_secret == AGENTICTRADE_PROXY_SECRET
-    ):
-        return True
-
-    # AgenticTrade alt header'lar (fallback)
-    for header_name in [
-        "X-AgenticTrade-Secret",
-        "X-ACF-Secret",
-        "X-AgenticTrade-Proxy-Secret",
-    ]:
-
-        secret = request.headers.get(header_name, "")
-
-        if (
-            AGENTICTRADE_PROXY_SECRET
-            and secret == AGENTICTRADE_PROXY_SECRET
-        ):
-            return True
-
-    # AgenticTrade Bearer token (eski yöntem)
-    auth_header = request.headers.get("Authorization", "")
-
-    if auth_header.startswith("Bearer "):
-
-        token = auth_header.replace("Bearer ", "").strip()
-
-        if token:
-            return True
-
-    # RapidAPI proxy secret
-    rapidapi_key = request.headers.get(
-        "X-RapidAPI-Proxy-Secret"
-    )
-
-    if (
-        RAPIDAPI_PROXY_SECRET
-        and rapidapi_key == RAPIDAPI_PROXY_SECRET
-    ):
-        return True
-
-    # Direct API key
-    supplied = (
-        request.headers.get("X-API-Key")
-        or request.args.get("api_key")
-    )
-
-    if not MASTER_API_KEY:
-        return supplied in {None, "", DEV_API_KEY}
-
-    return supplied in {MASTER_API_KEY, DEV_API_KEY}
+    # Auth disabled. AgenticTrade and RapidAPI handle
+    # authentication via their own gateways.
+    return True
 
 
 def rate_limit():
@@ -1737,19 +1693,6 @@ def before_request():
 
     if request.path in {"/", "/health"}:
         return None
-
-    if not check_auth():
-
-        # Log the headers so we can see what AgenticTrade sends
-        print(
-            f"[AUTH FAIL] {request.method} {request.path} "
-            f"headers={dict(request.headers)}"
-        )
-
-        return jsonify({
-            "error": "Unauthorized",
-            "message": "Provide a valid X-API-Key."
-        }), 401
 
     if not rate_limit():
 
@@ -2182,6 +2125,7 @@ print("=" * 65)
 print(f"{APP_NAME} v{VERSION}")
 print("MicroCap Catalyst Radar API")
 print("Data source: Yahoo Finance screeners + SEC EDGAR")
+print("Auth: DISABLED (proxy handles auth)")
 print("=" * 65)
 
 init_db()
